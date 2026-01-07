@@ -255,30 +255,6 @@ go run .
 | skip_queue | bool | Defaults to `false` |
 | overdraft_limit | float | Defaults to `0` |
 
-## Troubleshooting
-
-### Connection Refused
-Ensure Typesense is running and accessible at the configured host/port. If running in Docker, ensure port 8108 is exposed.
-
-### Authentication Failed
-Verify the `TypesenseAPIKey` matches the API key configured in Typesense.
-
-### Reference Field Errors
-The script uses `dirty_values=coerce_or_drop` to handle cases where referenced documents don't exist. Collections are reindexed in dependency order to minimize this.
-
-### High Failure Rate
-- Check Typesense logs for specific errors
-- Verify the collection schema includes all required fields
-- Ensure all collections exist before running
-
-### Memory Issues
-Reduce `BatchSize` and `BulkSize` in the configuration.
-
-### Slow Performance
-- Increase `BatchSize` to reduce DB round trips
-- Increase `BulkSize` to reduce Typesense round trips
-- Ensure database indexes are in place on `created_at`
-
 ## Non-Goals
 
 This script does NOT:
