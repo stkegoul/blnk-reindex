@@ -263,7 +263,3 @@ This script does NOT:
 - Modify database data
 - Rely on Typesense doing any automatic migration
 - Modify the main Blnk codebase
-
-## License
-
-Same as Blnk Finance - Apache 2.0
