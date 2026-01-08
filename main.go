@@ -92,7 +92,6 @@ func loadConfig() error {
 			BatchSize        int   `json:"batch_size"`
 			BulkSize         int   `json:"bulk_size"`
 			ProgressInterval int64 `json:"progress_interval"`
-			Concurrency      int   `json:"concurrency"`
 		} `json:"processing"`
 		CollectionsToIndex []string `json:"collections_to_index"`
 		TimeRange          struct {
@@ -114,10 +113,7 @@ func loadConfig() error {
 	config.BatchSize = configData.Processing.BatchSize
 	config.BulkSize = configData.Processing.BulkSize
 	config.ProgressInterval = configData.Processing.ProgressInterval
-	config.Concurrency = configData.Processing.Concurrency
-	if config.Concurrency <= 0 {
-		config.Concurrency = 20 // Default to 5 workers if not specified
-	}
+	config.Concurrency = 5 // Fixed at 5 workers
 	config.CollectionsToIndex = configData.CollectionsToIndex
 	// Note: Safety and retry settings use default values defined in struct initialization
 
@@ -569,7 +565,7 @@ func main() {
 
 	log("INFO", "Database: %s", maskConnectionString(config.DatabaseDNS))
 	log("INFO", "Typesense: %s://%s:%s", config.TypesenseProtocol, config.TypesenseHost, config.TypesensePort)
-	log("INFO", "Batch Size: %d, Bulk Size: %d, Concurrency: %d", config.BatchSize, config.BulkSize, config.Concurrency)
+	log("INFO", "Batch Size: %d, Bulk Size: %d", config.BatchSize, config.BulkSize)
 
 	// Log time range configuration
 	if config.TimeRangeStart != nil && config.TimeRangeEnd != nil {
