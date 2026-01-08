@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Go installed on your system
+- **Blnk version 0.12.1** - This script is designed for and tested with Blnk 0.12.1
 
 ## Setup
 
