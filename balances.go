@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// ============================================================================
-// BALANCE MODEL
-// ============================================================================
+// Balance Model
+// Data structure for balance records
 
 type balance struct {
 	BalanceID             string
@@ -32,9 +31,8 @@ type balance struct {
 	MetaData              map[string]interface{}
 }
 
-// ============================================================================
-// BALANCE REINDEX
-// ============================================================================
+// Balance Reindex
+// Main reindexing logic for balances collection
 
 func reindexBalances(ctx context.Context, db *sql.DB) bool {
 	// Build count query with time range filtering
@@ -130,9 +128,8 @@ func reindexBalances(ctx context.Context, db *sql.DB) bool {
 	return totalFailed == 0 || float64(totalFailed)/float64(totalScanned)*100 <= config.MaxFailureRatePercent
 }
 
-// ============================================================================
-// DATABASE OPERATIONS
-// ============================================================================
+// Database Operations
+// Functions for fetching balance data from PostgreSQL
 
 func fetchBalanceBatch(ctx context.Context, db *sql.DB, offset int64) ([]*balance, error) {
 	// Note: inflight_expires_at is NOT stored in the DB - it's computed at runtime
@@ -215,9 +212,8 @@ func fetchBalanceBatch(ctx context.Context, db *sql.DB, offset int64) ([]*balanc
 	return balances, rows.Err()
 }
 
-// ============================================================================
-// TRANSFORMATION
-// ============================================================================
+// Transformation
+// Functions for converting balance records to Typesense documents
 
 func transformBalance(bal *balance) map[string]interface{} {
 	doc := map[string]interface{}{

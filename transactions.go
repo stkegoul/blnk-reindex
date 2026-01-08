@@ -11,9 +11,8 @@ import (
 	"time"
 )
 
-// ============================================================================
-// TRANSACTION MODEL
-// ============================================================================
+// Transaction Model
+// Data structure for transaction records
 
 type transaction struct {
 	TransactionID     string
@@ -37,9 +36,8 @@ type transaction struct {
 	Destinations      []string
 }
 
-// ============================================================================
-// TRANSACTION REINDEX
-// ============================================================================
+// Transaction Reindex
+// Main reindexing logic for transactions collection
 
 func reindexTransactions(ctx context.Context, db *sql.DB) bool {
 	// Build count query - only index APPLIED, INFLIGHT, REJECTED, SCHEDULED, and VOID transactions
@@ -136,9 +134,8 @@ func reindexTransactions(ctx context.Context, db *sql.DB) bool {
 	return totalFailed == 0 || float64(totalFailed)/float64(totalScanned)*100 <= config.MaxFailureRatePercent
 }
 
-// ============================================================================
-// DATABASE OPERATIONS
-// ============================================================================
+// Database Operations
+// Functions for fetching transaction data from PostgreSQL
 
 func fetchTransactionBatch(ctx context.Context, db *sql.DB, offset int64) ([]*transaction, error) {
 	baseQuery := `
@@ -237,9 +234,8 @@ func fetchTransactionBatch(ctx context.Context, db *sql.DB, offset int64) ([]*tr
 	return transactions, rows.Err()
 }
 
-// ============================================================================
-// TRANSFORMATION
-// ============================================================================
+// Transformation
+// Functions for converting transaction records to Typesense documents
 
 func transformTransaction(txn *transaction) map[string]interface{} {
 	doc := map[string]interface{}{

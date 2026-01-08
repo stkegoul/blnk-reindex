@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// ============================================================================
-// IDENTITY MODEL
-// ============================================================================
+// Identity Model
+// Data structure for identity records
 
 type identity struct {
 	IdentityID       string
@@ -36,9 +35,8 @@ type identity struct {
 	MetaData         map[string]interface{}
 }
 
-// ============================================================================
-// IDENTITY REINDEX
-// ============================================================================
+// Identity Reindex
+// Main reindexing logic for identities collection
 
 func reindexIdentities(ctx context.Context, db *sql.DB) bool {
 	// Build count query with time range filtering
@@ -128,9 +126,8 @@ func reindexIdentities(ctx context.Context, db *sql.DB) bool {
 	return totalFailed == 0 || float64(totalFailed)/float64(totalScanned)*100 <= config.MaxFailureRatePercent
 }
 
-// ============================================================================
-// DATABASE OPERATIONS
-// ============================================================================
+// Database Operations
+// Functions for fetching identity data from PostgreSQL
 
 func fetchIdentityBatch(ctx context.Context, db *sql.DB, offset int64) ([]*identity, error) {
 	baseQuery := `
@@ -222,9 +219,8 @@ func fetchIdentityBatch(ctx context.Context, db *sql.DB, offset int64) ([]*ident
 	return identities, rows.Err()
 }
 
-// ============================================================================
-// TRANSFORMATION
-// ============================================================================
+// Transformation
+// Functions for converting identity records to Typesense documents
 
 func transformIdentity(i *identity) map[string]interface{} {
 	doc := map[string]interface{}{

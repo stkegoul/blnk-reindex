@@ -72,13 +72,6 @@ Configuration is managed through a `config.json` file. Edit this file to customi
     "bulk_size": 2000,
     "progress_interval": 100000
   },
-  "safety": {
-    "max_failure_rate_percent": 5.0
-  },
-  "retry": {
-    "max_retries": 3,
-    "retry_base_wait_seconds": 2
-  },
   "collections_to_skip": [],
   "time_range": {
     "enabled": false,
@@ -96,12 +89,11 @@ Configuration is managed through a `config.json` file. Edit this file to customi
   - `batch_size`: Number of records per DB query page
   - `bulk_size`: Number of documents per Typesense bulk import
   - `progress_interval`: Log progress every N records
-- **safety**: Safety thresholds
-  - `max_failure_rate_percent`: Exit if failure rate exceeds this (0-100)
-- **retry**: Retry configuration for transient failures
-  - `max_retries`: Maximum number of retry attempts
-  - `retry_base_wait_seconds`: Base wait time between retries (exponential backoff)
 - **collections_to_skip**: Array of collection names to skip (e.g., `["ledgers", "identities"]`)
+
+**Note**: Safety and retry settings are hardcoded with sensible defaults:
+- Maximum failure rate: 5% (script aborts if exceeded)
+- Max retries: 3 attempts with exponential backoff (2 seconds base wait)
 - **time_range**: Time range filtering for selective reindexing
   - `enabled`: Set to `true` to enable time range filtering
   - `start_time_utc`: Start time in RFC3339 format (UTC), e.g., `"2024-01-01T00:00:00Z"`

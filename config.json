@@ -13,13 +13,6 @@
     "bulk_size": 2000,
     "progress_interval": 100000
   },
-  "safety": {
-    "max_failure_rate_percent": 5.0
-  },
-  "retry": {
-    "max_retries": 3,
-    "retry_base_wait_seconds": 2
-  },
   "collections_to_skip": [],
   "time_range": {
     "enabled": false,

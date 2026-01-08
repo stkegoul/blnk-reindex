@@ -23,9 +23,8 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
+// Configuration
+// Application configuration loaded from config.json
 
 var config = struct {
 	// Database
@@ -56,7 +55,14 @@ var config = struct {
 	TimeRangeEnabled bool
 	TimeRangeStart   *time.Time // UTC time - nil means no start limit
 	TimeRangeEnd     *time.Time // UTC time - nil means no end limit
-}{}
+}{
+	// Safety defaults - abort if more than 5% of documents fail
+	MaxFailureRatePercent: 5.0,
+
+	// Retry defaults for transient failures
+	MaxRetries:    3,
+	RetryBaseWait: 2 * time.Second,
+}
 
 // loadConfig loads configuration from config.json file
 func loadConfig() error {
@@ -85,13 +91,6 @@ func loadConfig() error {
 			BulkSize         int   `json:"bulk_size"`
 			ProgressInterval int64 `json:"progress_interval"`
 		} `json:"processing"`
-		Safety struct {
-			MaxFailureRatePercent float64 `json:"max_failure_rate_percent"`
-		} `json:"safety"`
-		Retry struct {
-			MaxRetries           int `json:"max_retries"`
-			RetryBaseWaitSeconds int `json:"retry_base_wait_seconds"`
-		} `json:"retry"`
 		CollectionsToSkip []string `json:"collections_to_skip"`
 		TimeRange         struct {
 			Enabled      bool   `json:"enabled"`
@@ -113,10 +112,8 @@ func loadConfig() error {
 	config.BatchSize = configData.Processing.BatchSize
 	config.BulkSize = configData.Processing.BulkSize
 	config.ProgressInterval = configData.Processing.ProgressInterval
-	config.MaxFailureRatePercent = configData.Safety.MaxFailureRatePercent
-	config.MaxRetries = configData.Retry.MaxRetries
-	config.RetryBaseWait = time.Duration(configData.Retry.RetryBaseWaitSeconds) * time.Second
 	config.CollectionsToSkip = configData.CollectionsToSkip
+	// Note: Safety and retry settings use default values defined in struct initialization
 
 	// Load time range
 	config.TimeRangeEnabled = configData.TimeRange.Enabled
@@ -144,9 +141,8 @@ func loadConfig() error {
 	return nil
 }
 
-// ============================================================================
-// LOGGING
-// ============================================================================
+// Logging
+// Simple logging utility with timestamps
 
 func log(level, format string, args ...interface{}) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
@@ -154,15 +150,13 @@ func log(level, format string, args ...interface{}) {
 	fmt.Printf("[%s] %s: %s\n", timestamp, level, msg)
 }
 
-// ============================================================================
-// HTTP CLIENT
-// ============================================================================
+// HTTP Client
+// Shared HTTP client for Typesense requests
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
 
-// ============================================================================
-// TYPESENSE OPERATIONS
-// ============================================================================
+// Typesense Operations
+// Functions for interacting with Typesense API
 
 func verifyTypesenseCollection(collectionName string) error {
 	url := fmt.Sprintf("%s://%s:%s/collections/%s",
@@ -188,125 +182,6 @@ func verifyTypesenseCollection(collectionName string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	return nil
-}
-
-// removeReferencesFromTransactionsSchema removes references from sources and destinations fields
-// by dropping and recreating the collection with modified schema
-func removeReferencesFromTransactionsSchema(ctx context.Context) error {
-	log("INFO", "Removing references from sources and destinations fields in transactions collection...")
-
-	// Get current schema
-	url := fmt.Sprintf("%s://%s:%s/collections/transactions",
-		config.TypesenseProtocol, config.TypesenseHost, config.TypesensePort)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("X-TYPESENSE-API-KEY", config.TypesenseAPIKey)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to get schema: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var currentSchema map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&currentSchema); err != nil {
-		return fmt.Errorf("failed to decode schema: %w", err)
-	}
-
-	// Modify fields to remove references from sources and destinations
-	fields, ok := currentSchema["fields"].([]interface{})
-	if !ok {
-		return fmt.Errorf("invalid schema format: fields not found")
-	}
-
-	modifiedFields := make([]map[string]interface{}, 0, len(fields))
-	for _, field := range fields {
-		fieldMap, ok := field.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		fieldName, _ := fieldMap["name"].(string)
-		if fieldName == "sources" || fieldName == "destinations" {
-			// Remove reference from this field
-			delete(fieldMap, "reference")
-			log("INFO", "Removed reference from field: %s", fieldName)
-		}
-
-		modifiedFields = append(modifiedFields, fieldMap)
-	}
-
-	// Create new schema with modified fields
-	newSchema := map[string]interface{}{
-		"name":                  currentSchema["name"],
-		"fields":                modifiedFields,
-		"default_sorting_field": currentSchema["default_sorting_field"],
-		"enable_nested_fields":  currentSchema["enable_nested_fields"],
-	}
-
-	// Delete existing collection
-	deleteURL := fmt.Sprintf("%s://%s:%s/collections/transactions",
-		config.TypesenseProtocol, config.TypesenseHost, config.TypesensePort)
-
-	req, err = http.NewRequestWithContext(ctx, "DELETE", deleteURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create delete request: %w", err)
-	}
-	req.Header.Set("X-TYPESENSE-API-KEY", config.TypesenseAPIKey)
-
-	resp, err = httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("delete request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 && resp.StatusCode != 404 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to delete collection: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	log("INFO", "Deleted transactions collection")
-
-	// Wait a moment for deletion to complete
-	time.Sleep(1 * time.Second)
-
-	// Create collection with modified schema
-	schemaJSON, err := json.Marshal(newSchema)
-	if err != nil {
-		return fmt.Errorf("failed to marshal schema: %w", err)
-	}
-
-	createURL := fmt.Sprintf("%s://%s:%s/collections",
-		config.TypesenseProtocol, config.TypesenseHost, config.TypesensePort)
-
-	req, err = http.NewRequestWithContext(ctx, "POST", createURL, bytes.NewBuffer(schemaJSON))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-TYPESENSE-API-KEY", config.TypesenseAPIKey)
-
-	resp, err = httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("create request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to create collection: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	log("INFO", "Recreated transactions collection without references on sources/destinations")
 	return nil
 }
 
@@ -576,9 +451,8 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "EOF")
 }
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
+// Helper Functions
+// Utility functions for query building and data conversion
 
 // buildTimeRangeClause builds a WHERE clause for time range filtering based on created_at
 // Returns the WHERE clause and any parameters to bind
@@ -636,9 +510,8 @@ func min(a, b int) int {
 	return b
 }
 
-// ============================================================================
-// MAIN
-// ============================================================================
+// Main
+// Entry point for the reindex script
 
 func main() {
 	log("INFO", "=== Typesense Full Reindex Script ===")

@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// ============================================================================
-// RECONCILIATION MODEL
-// ============================================================================
+// Reconciliation Model
+// Data structure for reconciliation records
 
 type reconciliation struct {
 	ReconciliationID      string
@@ -24,9 +23,8 @@ type reconciliation struct {
 	CompletedAt           *time.Time
 }
 
-// ============================================================================
-// RECONCILIATION REINDEX
-// ============================================================================
+// Reconciliation Reindex
+// Main reindexing logic for reconciliations collection
 
 func reindexReconciliations(ctx context.Context, db *sql.DB) bool {
 	// Build count query with time range filtering (using started_at for reconciliations)
@@ -136,9 +134,8 @@ func reindexReconciliations(ctx context.Context, db *sql.DB) bool {
 	return totalFailed == 0 || float64(totalFailed)/float64(totalScanned)*100 <= config.MaxFailureRatePercent
 }
 
-// ============================================================================
-// DATABASE OPERATIONS
-// ============================================================================
+// Database Operations
+// Functions for fetching reconciliation data from PostgreSQL
 
 func fetchReconciliationBatch(ctx context.Context, db *sql.DB, offset int64) ([]*reconciliation, error) {
 	baseQuery := `
@@ -217,9 +214,8 @@ func fetchReconciliationBatch(ctx context.Context, db *sql.DB, offset int64) ([]
 	return reconciliations, rows.Err()
 }
 
-// ============================================================================
-// TRANSFORMATION
-// ============================================================================
+// Transformation
+// Functions for converting reconciliation records to Typesense documents
 
 func transformReconciliation(r *reconciliation) map[string]interface{} {
 	doc := map[string]interface{}{

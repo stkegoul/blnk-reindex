@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// ============================================================================
-// LEDGER MODEL
-// ============================================================================
+// Ledger Model
+// Data structure for ledger records
 
 type ledger struct {
 	LedgerID  string
@@ -21,9 +20,8 @@ type ledger struct {
 	MetaData  map[string]interface{}
 }
 
-// ============================================================================
-// LEDGER REINDEX
-// ============================================================================
+// Ledger Reindex
+// Main reindexing logic for ledgers collection
 
 func reindexLedgers(ctx context.Context, db *sql.DB) bool {
 	// Build count query with time range filtering
@@ -113,9 +111,8 @@ func reindexLedgers(ctx context.Context, db *sql.DB) bool {
 	return totalFailed == 0 || float64(totalFailed)/float64(totalScanned)*100 <= config.MaxFailureRatePercent
 }
 
-// ============================================================================
-// DATABASE OPERATIONS
-// ============================================================================
+// Database Operations
+// Functions for fetching ledger data from PostgreSQL
 
 func fetchLedgerBatch(ctx context.Context, db *sql.DB, offset int64) ([]*ledger, error) {
 	baseQuery := `
@@ -172,9 +169,8 @@ func fetchLedgerBatch(ctx context.Context, db *sql.DB, offset int64) ([]*ledger,
 	return ledgers, rows.Err()
 }
 
-// ============================================================================
-// TRANSFORMATION
-// ============================================================================
+// Transformation
+// Functions for converting ledger records to Typesense documents
 
 func transformLedger(l *ledger) map[string]interface{} {
 	doc := map[string]interface{}{
