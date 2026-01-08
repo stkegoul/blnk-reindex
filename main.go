@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -40,6 +42,7 @@ var config = struct {
 	BatchSize        int   // Records to fetch from DB per query
 	BulkSize         int   // Documents to send per Typesense import request
 	ProgressInterval int64 // Log progress every N records
+	Concurrency      int   // Number of concurrent workers for batch upserts
 
 	// Safety
 	MaxFailureRatePercent float64
@@ -48,13 +51,12 @@ var config = struct {
 	MaxRetries    int
 	RetryBaseWait time.Duration
 
-	// Collections to skip (set to skip already-completed collections)
-	CollectionsToSkip []string
+	// Collections to index (empty list means index all collections)
+	CollectionsToIndex []string
 
 	// Time range filtering
-	TimeRangeEnabled bool
-	TimeRangeStart   *time.Time // UTC time - nil means no start limit
-	TimeRangeEnd     *time.Time // UTC time - nil means no end limit
+	TimeRangeStart *time.Time // UTC time - nil means no start limit
+	TimeRangeEnd   *time.Time // UTC time - nil means no end limit
 }{
 	// Safety defaults - abort if more than 5% of documents fail
 	MaxFailureRatePercent: 5.0,
@@ -90,10 +92,10 @@ func loadConfig() error {
 			BatchSize        int   `json:"batch_size"`
 			BulkSize         int   `json:"bulk_size"`
 			ProgressInterval int64 `json:"progress_interval"`
+			Concurrency      int   `json:"concurrency"`
 		} `json:"processing"`
-		CollectionsToSkip []string `json:"collections_to_skip"`
-		TimeRange         struct {
-			Enabled      bool   `json:"enabled"`
+		CollectionsToIndex []string `json:"collections_to_index"`
+		TimeRange          struct {
 			StartTimeUTC string `json:"start_time_utc"`
 			EndTimeUTC   string `json:"end_time_utc"`
 		} `json:"time_range"`
@@ -112,30 +114,31 @@ func loadConfig() error {
 	config.BatchSize = configData.Processing.BatchSize
 	config.BulkSize = configData.Processing.BulkSize
 	config.ProgressInterval = configData.Processing.ProgressInterval
-	config.CollectionsToSkip = configData.CollectionsToSkip
+	config.Concurrency = configData.Processing.Concurrency
+	if config.Concurrency <= 0 {
+		config.Concurrency = 20 // Default to 5 workers if not specified
+	}
+	config.CollectionsToIndex = configData.CollectionsToIndex
 	// Note: Safety and retry settings use default values defined in struct initialization
 
-	// Load time range
-	config.TimeRangeEnabled = configData.TimeRange.Enabled
-	if config.TimeRangeEnabled {
-		if configData.TimeRange.StartTimeUTC != "" {
-			startTime, err := time.Parse(time.RFC3339, configData.TimeRange.StartTimeUTC)
-			if err != nil {
-				return fmt.Errorf("invalid start_time_utc format (use RFC3339, e.g., 2024-01-01T00:00:00Z): %w", err)
-			}
-			// Ensure it's in UTC
-			startTime = startTime.UTC()
-			config.TimeRangeStart = &startTime
+	// Load time range - parse if provided (empty strings mean no limit)
+	if configData.TimeRange.StartTimeUTC != "" {
+		startTime, err := time.Parse(time.RFC3339, configData.TimeRange.StartTimeUTC)
+		if err != nil {
+			return fmt.Errorf("invalid start_time_utc format (use RFC3339, e.g., 2024-01-01T00:00:00Z): %w", err)
 		}
-		if configData.TimeRange.EndTimeUTC != "" {
-			endTime, err := time.Parse(time.RFC3339, configData.TimeRange.EndTimeUTC)
-			if err != nil {
-				return fmt.Errorf("invalid end_time_utc format (use RFC3339, e.g., 2024-12-31T23:59:59Z): %w", err)
-			}
-			// Ensure it's in UTC
-			endTime = endTime.UTC()
-			config.TimeRangeEnd = &endTime
+		// Ensure it's in UTC
+		startTime = startTime.UTC()
+		config.TimeRangeStart = &startTime
+	}
+	if configData.TimeRange.EndTimeUTC != "" {
+		endTime, err := time.Parse(time.RFC3339, configData.TimeRange.EndTimeUTC)
+		if err != nil {
+			return fmt.Errorf("invalid end_time_utc format (use RFC3339, e.g., 2024-12-31T23:59:59Z): %w", err)
 		}
+		// Ensure it's in UTC
+		endTime = endTime.UTC()
+		config.TimeRangeEnd = &endTime
 	}
 
 	return nil
@@ -183,6 +186,48 @@ func verifyTypesenseCollection(collectionName string) error {
 	}
 
 	return nil
+}
+
+// processBatchesConcurrently processes multiple document chunks concurrently using a worker pool
+func processBatchesConcurrently(ctx context.Context, collectionName string, chunks [][]map[string]interface{}) (totalSucceeded, totalFailed int64) {
+	if len(chunks) == 0 {
+		return 0, 0
+	}
+
+	// Use atomic counters for thread-safe updates
+	var succeeded, failed int64
+
+	// Create a channel to send chunks to workers
+	chunkChan := make(chan []map[string]interface{}, len(chunks))
+	for _, chunk := range chunks {
+		chunkChan <- chunk
+	}
+	close(chunkChan)
+
+	// Create worker pool
+	var wg sync.WaitGroup
+	workerCount := config.Concurrency
+	if workerCount > len(chunks) {
+		workerCount = len(chunks) // Don't create more workers than chunks
+	}
+
+	// Start workers
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for chunk := range chunkChan {
+				s, f := bulkUpsertWithRetry(ctx, collectionName, chunk)
+				atomic.AddInt64(&succeeded, int64(s))
+				atomic.AddInt64(&failed, int64(f))
+			}
+		}()
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+
+	return succeeded, failed
 }
 
 func bulkUpsertWithRetry(ctx context.Context, collectionName string, documents []map[string]interface{}) (succeeded, failed int) {
@@ -456,11 +501,11 @@ func isRetryableError(err error) bool {
 
 // buildTimeRangeClause builds a WHERE clause for time range filtering based on created_at
 // Returns the WHERE clause and any parameters to bind
+// If start time exists but no end time: query from start to latest
+// If end time exists but no start time: query from earliest to end
+// If both exist: query between range
+// If neither exist: no filtering (reindex all)
 func buildTimeRangeClause(baseQuery string, paramOffset int) (string, []interface{}) {
-	if !config.TimeRangeEnabled {
-		return baseQuery, []interface{}{}
-	}
-
 	var conditions []string
 	var params []interface{}
 	paramIdx := paramOffset
@@ -524,17 +569,15 @@ func main() {
 
 	log("INFO", "Database: %s", maskConnectionString(config.DatabaseDNS))
 	log("INFO", "Typesense: %s://%s:%s", config.TypesenseProtocol, config.TypesenseHost, config.TypesensePort)
-	log("INFO", "Batch Size: %d, Bulk Size: %d", config.BatchSize, config.BulkSize)
+	log("INFO", "Batch Size: %d, Bulk Size: %d, Concurrency: %d", config.BatchSize, config.BulkSize, config.Concurrency)
 
-	// Log time range if enabled
-	if config.TimeRangeEnabled {
-		if config.TimeRangeStart != nil && config.TimeRangeEnd != nil {
-			log("INFO", "Time Range: %s to %s (UTC)", config.TimeRangeStart.Format(time.RFC3339), config.TimeRangeEnd.Format(time.RFC3339))
-		} else if config.TimeRangeStart != nil {
-			log("INFO", "Time Range: from %s (UTC)", config.TimeRangeStart.Format(time.RFC3339))
-		} else if config.TimeRangeEnd != nil {
-			log("INFO", "Time Range: until %s (UTC)", config.TimeRangeEnd.Format(time.RFC3339))
-		}
+	// Log time range configuration
+	if config.TimeRangeStart != nil && config.TimeRangeEnd != nil {
+		log("INFO", "Time Range: %s to %s (UTC)", config.TimeRangeStart.Format(time.RFC3339), config.TimeRangeEnd.Format(time.RFC3339))
+	} else if config.TimeRangeStart != nil {
+		log("INFO", "Time Range: from %s to latest (UTC)", config.TimeRangeStart.Format(time.RFC3339))
+	} else if config.TimeRangeEnd != nil {
+		log("INFO", "Time Range: from earliest to %s (UTC)", config.TimeRangeEnd.Format(time.RFC3339))
 	} else {
 		log("INFO", "Time Range: disabled (indexing all records)")
 	}
@@ -584,17 +627,19 @@ func main() {
 		{"TRANSACTIONS", reindexTransactions},
 	}
 
-	// Build skip map for fast lookup
-	skipMap := make(map[string]bool)
-	for _, name := range config.CollectionsToSkip {
-		skipMap[strings.ToUpper(name)] = true
+	// Build index map for fast lookup (if empty, index all)
+	indexMap := make(map[string]bool)
+	for _, name := range config.CollectionsToIndex {
+		indexMap[strings.ToUpper(name)] = true
 	}
+	indexAll := len(config.CollectionsToIndex) == 0
 
 	stepNum := 1
 	for _, step := range steps {
-		if skipMap[step.name] {
+		// Skip if not in the index list (unless list is empty, then index all)
+		if !indexAll && !indexMap[step.name] {
 			log("INFO", "")
-			log("INFO", "========== STEP %d: SKIPPING %s (already completed) ==========", stepNum, step.name)
+			log("INFO", "========== STEP %d: SKIPPING %s (not in collections_to_index) ==========", stepNum, step.name)
 			stepNum++
 			continue
 		}

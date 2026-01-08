@@ -85,18 +85,20 @@ func reindexTransactions(ctx context.Context, db *sql.DB) bool {
 			documents = append(documents, doc)
 		}
 
-		// Process in bulk chunks
+		// Split into chunks for concurrent processing
+		chunks := make([][]map[string]interface{}, 0)
 		for i := 0; i < len(documents); i += config.BulkSize {
 			end := i + config.BulkSize
 			if end > len(documents) {
 				end = len(documents)
 			}
-			chunk := documents[i:end]
-
-			succeeded, failed := bulkUpsertWithRetry(ctx, "transactions", chunk)
-			totalSucceeded += int64(succeeded)
-			totalFailed += int64(failed)
+			chunks = append(chunks, documents[i:end])
 		}
+
+		// Process chunks concurrently
+		succeeded, failed := processBatchesConcurrently(ctx, "transactions", chunks)
+		totalSucceeded += succeeded
+		totalFailed += failed
 
 		totalScanned += int64(len(transactions))
 		offset += int64(len(transactions))

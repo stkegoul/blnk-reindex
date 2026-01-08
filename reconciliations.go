@@ -30,32 +30,24 @@ func reindexReconciliations(ctx context.Context, db *sql.DB) bool {
 	// Build count query with time range filtering (using started_at for reconciliations)
 	countQuery := "SELECT COUNT(*) FROM blnk.reconciliations"
 	var totalCount int64
-	if config.TimeRangeEnabled {
-		var conditions []string
-		var params []interface{}
-		if config.TimeRangeStart != nil {
-			conditions = append(conditions, "started_at >= $1")
-			params = append(params, *config.TimeRangeStart)
-		}
-		if config.TimeRangeEnd != nil {
-			paramIdx := len(params) + 1
-			conditions = append(conditions, fmt.Sprintf("started_at <= $%d", paramIdx))
-			params = append(params, *config.TimeRangeEnd)
-		}
-		if len(conditions) > 0 {
-			countQuery += " WHERE " + strings.Join(conditions, " AND ")
-		}
-		err := db.QueryRowContext(ctx, countQuery, params...).Scan(&totalCount)
-		if err != nil {
-			log("ERROR", "Failed to count reconciliations: %v", err)
-			return false
-		}
-	} else {
-		err := db.QueryRowContext(ctx, countQuery).Scan(&totalCount)
-		if err != nil {
-			log("ERROR", "Failed to count reconciliations: %v", err)
-			return false
-		}
+	var conditions []string
+	var params []interface{}
+	if config.TimeRangeStart != nil {
+		conditions = append(conditions, "started_at >= $1")
+		params = append(params, *config.TimeRangeStart)
+	}
+	if config.TimeRangeEnd != nil {
+		paramIdx := len(params) + 1
+		conditions = append(conditions, fmt.Sprintf("started_at <= $%d", paramIdx))
+		params = append(params, *config.TimeRangeEnd)
+	}
+	if len(conditions) > 0 {
+		countQuery += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	err := db.QueryRowContext(ctx, countQuery, params...).Scan(&totalCount)
+	if err != nil {
+		log("ERROR", "Failed to count reconciliations: %v", err)
+		return false
 	}
 	log("INFO", "Total reconciliations to reindex: %d", totalCount)
 
@@ -89,17 +81,20 @@ func reindexReconciliations(ctx context.Context, db *sql.DB) bool {
 			documents = append(documents, transformReconciliation(r))
 		}
 
+		// Split into chunks for concurrent processing
+		chunks := make([][]map[string]interface{}, 0)
 		for i := 0; i < len(documents); i += config.BulkSize {
 			end := i + config.BulkSize
 			if end > len(documents) {
 				end = len(documents)
 			}
-			chunk := documents[i:end]
-
-			succeeded, failed := bulkUpsertWithRetry(ctx, "reconciliations", chunk)
-			totalSucceeded += int64(succeeded)
-			totalFailed += int64(failed)
+			chunks = append(chunks, documents[i:end])
 		}
+
+		// Process chunks concurrently
+		succeeded, failed := processBatchesConcurrently(ctx, "reconciliations", chunks)
+		totalSucceeded += succeeded
+		totalFailed += failed
 
 		totalScanned += int64(len(reconciliations))
 		offset += int64(len(reconciliations))
@@ -153,22 +148,18 @@ func fetchReconciliationBatch(ctx context.Context, db *sql.DB, offset int64) ([]
 	// Build time range clause (using started_at for reconciliations)
 	var query string
 	var params []interface{}
-	if config.TimeRangeEnabled {
-		var conditions []string
-		if config.TimeRangeStart != nil {
-			conditions = append(conditions, "started_at >= $1")
-			params = append(params, *config.TimeRangeStart)
-		}
-		if config.TimeRangeEnd != nil {
-			paramIdx := len(params) + 1
-			conditions = append(conditions, fmt.Sprintf("started_at <= $%d", paramIdx))
-			params = append(params, *config.TimeRangeEnd)
-		}
-		if len(conditions) > 0 {
-			query = baseQuery + " WHERE " + strings.Join(conditions, " AND ")
-		} else {
-			query = baseQuery
-		}
+	var conditions []string
+	if config.TimeRangeStart != nil {
+		conditions = append(conditions, "started_at >= $1")
+		params = append(params, *config.TimeRangeStart)
+	}
+	if config.TimeRangeEnd != nil {
+		paramIdx := len(params) + 1
+		conditions = append(conditions, fmt.Sprintf("started_at <= $%d", paramIdx))
+		params = append(params, *config.TimeRangeEnd)
+	}
+	if len(conditions) > 0 {
+		query = baseQuery + " WHERE " + strings.Join(conditions, " AND ")
 	} else {
 		query = baseQuery
 	}

@@ -13,9 +13,8 @@
     "bulk_size": 2000,
     "progress_interval": 100000
   },
-  "collections_to_skip": [],
+  "collections_to_index": ["ledgers", "identities", "balances", "reconciliations", "transactions"],
   "time_range": {
-    "enabled": false,
     "start_time_utc": "",
     "end_time_utc": ""
   }

@@ -42,7 +42,7 @@ func reindexIdentities(ctx context.Context, db *sql.DB) bool {
 	// Build count query with time range filtering
 	countQuery := "SELECT COUNT(*) FROM blnk.identity"
 	countQuery, countParams := buildTimeRangeClause(countQuery, 1)
-	
+
 	var totalCount int64
 	err := db.QueryRowContext(ctx, countQuery, countParams...).Scan(&totalCount)
 	if err != nil {
@@ -81,17 +81,20 @@ func reindexIdentities(ctx context.Context, db *sql.DB) bool {
 			documents = append(documents, transformIdentity(i))
 		}
 
+		// Split into chunks for concurrent processing
+		chunks := make([][]map[string]interface{}, 0)
 		for i := 0; i < len(documents); i += config.BulkSize {
 			end := i + config.BulkSize
 			if end > len(documents) {
 				end = len(documents)
 			}
-			chunk := documents[i:end]
-
-			succeeded, failed := bulkUpsertWithRetry(ctx, "identities", chunk)
-			totalSucceeded += int64(succeeded)
-			totalFailed += int64(failed)
+			chunks = append(chunks, documents[i:end])
 		}
+
+		// Process chunks concurrently
+		succeeded, failed := processBatchesConcurrently(ctx, "identities", chunks)
+		totalSucceeded += succeeded
+		totalFailed += failed
 
 		totalScanned += int64(len(identities))
 		offset += int64(len(identities))
@@ -153,11 +156,11 @@ func fetchIdentityBatch(ctx context.Context, db *sql.DB, offset int64) ([]*ident
 			COALESCE(meta_data, '{}') as meta_data
 		FROM blnk.identity
 	`
-	
+
 	// Build time range clause
 	query, timeParams := buildTimeRangeClause(baseQuery, 1)
 	query += " ORDER BY created_at ASC"
-	
+
 	// Combine parameters: time range params first, then batch size and offset
 	params := append(timeParams, config.BatchSize, offset)
 	// Adjust LIMIT and OFFSET parameter numbers
