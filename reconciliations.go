@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,11 +29,35 @@ type reconciliation struct {
 // ============================================================================
 
 func reindexReconciliations(ctx context.Context, db *sql.DB) bool {
+	// Build count query with time range filtering (using started_at for reconciliations)
+	countQuery := "SELECT COUNT(*) FROM blnk.reconciliations"
 	var totalCount int64
-	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM blnk.reconciliations").Scan(&totalCount)
-	if err != nil {
-		log("ERROR", "Failed to count reconciliations: %v", err)
-		return false
+	if config.TimeRangeEnabled {
+		var conditions []string
+		var params []interface{}
+		if config.TimeRangeStart != nil {
+			conditions = append(conditions, "started_at >= $1")
+			params = append(params, *config.TimeRangeStart)
+		}
+		if config.TimeRangeEnd != nil {
+			paramIdx := len(params) + 1
+			conditions = append(conditions, fmt.Sprintf("started_at <= $%d", paramIdx))
+			params = append(params, *config.TimeRangeEnd)
+		}
+		if len(conditions) > 0 {
+			countQuery += " WHERE " + strings.Join(conditions, " AND ")
+		}
+		err := db.QueryRowContext(ctx, countQuery, params...).Scan(&totalCount)
+		if err != nil {
+			log("ERROR", "Failed to count reconciliations: %v", err)
+			return false
+		}
+	} else {
+		err := db.QueryRowContext(ctx, countQuery).Scan(&totalCount)
+		if err != nil {
+			log("ERROR", "Failed to count reconciliations: %v", err)
+			return false
+		}
 	}
 	log("INFO", "Total reconciliations to reindex: %d", totalCount)
 
@@ -115,7 +141,7 @@ func reindexReconciliations(ctx context.Context, db *sql.DB) bool {
 // ============================================================================
 
 func fetchReconciliationBatch(ctx context.Context, db *sql.DB, offset int64) ([]*reconciliation, error) {
-	query := `
+	baseQuery := `
 		SELECT 
 			reconciliation_id,
 			COALESCE(upload_id, '') as upload_id,
@@ -125,11 +151,39 @@ func fetchReconciliationBatch(ctx context.Context, db *sql.DB, offset int64) ([]
 			started_at,
 			completed_at
 		FROM blnk.reconciliations
-		ORDER BY started_at ASC
-		LIMIT $1 OFFSET $2
 	`
+	
+	// Build time range clause (using started_at for reconciliations)
+	var query string
+	var params []interface{}
+	if config.TimeRangeEnabled {
+		var conditions []string
+		if config.TimeRangeStart != nil {
+			conditions = append(conditions, "started_at >= $1")
+			params = append(params, *config.TimeRangeStart)
+		}
+		if config.TimeRangeEnd != nil {
+			paramIdx := len(params) + 1
+			conditions = append(conditions, fmt.Sprintf("started_at <= $%d", paramIdx))
+			params = append(params, *config.TimeRangeEnd)
+		}
+		if len(conditions) > 0 {
+			query = baseQuery + " WHERE " + strings.Join(conditions, " AND ")
+		} else {
+			query = baseQuery
+		}
+	} else {
+		query = baseQuery
+	}
+	
+	query += " ORDER BY started_at ASC"
+	
+	// Combine parameters: time range params first, then batch size and offset
+	paramCount := len(params)
+	params = append(params, config.BatchSize, offset)
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", paramCount+1, paramCount+2)
 
-	rows, err := db.QueryContext(ctx, query, config.BatchSize, offset)
+	rows, err := db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}

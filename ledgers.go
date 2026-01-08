@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -25,8 +26,12 @@ type ledger struct {
 // ============================================================================
 
 func reindexLedgers(ctx context.Context, db *sql.DB) bool {
+	// Build count query with time range filtering
+	countQuery := "SELECT COUNT(*) FROM blnk.ledgers"
+	countQuery, countParams := buildTimeRangeClause(countQuery, 1)
+
 	var totalCount int64
-	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM blnk.ledgers").Scan(&totalCount)
+	err := db.QueryRowContext(ctx, countQuery, countParams...).Scan(&totalCount)
 	if err != nil {
 		log("ERROR", "Failed to count ledgers: %v", err)
 		return false
@@ -113,18 +118,26 @@ func reindexLedgers(ctx context.Context, db *sql.DB) bool {
 // ============================================================================
 
 func fetchLedgerBatch(ctx context.Context, db *sql.DB, offset int64) ([]*ledger, error) {
-	query := `
+	baseQuery := `
 		SELECT 
 			ledger_id,
 			COALESCE(name, '') as name,
 			created_at,
 			COALESCE(meta_data, '{}') as meta_data
 		FROM blnk.ledgers
-		ORDER BY created_at ASC
-		LIMIT $1 OFFSET $2
 	`
 
-	rows, err := db.QueryContext(ctx, query, config.BatchSize, offset)
+	// Build time range clause
+	query, timeParams := buildTimeRangeClause(baseQuery, 1)
+	query += " ORDER BY created_at ASC"
+
+	// Combine parameters: time range params first, then batch size and offset
+	params := append(timeParams, config.BatchSize, offset)
+	// Adjust LIMIT and OFFSET parameter numbers
+	paramCount := len(timeParams)
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", paramCount+1, paramCount+2)
+
+	rows, err := db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -172,10 +185,9 @@ func transformLedger(l *ledger) map[string]interface{} {
 	}
 
 	// Only include meta_data if it has content (field is optional in schema)
-	if l.MetaData != nil && len(l.MetaData) > 0 {
+	if len(l.MetaData) > 0 {
 		doc["meta_data"] = l.MetaData
 	}
 
 	return doc
 }
-

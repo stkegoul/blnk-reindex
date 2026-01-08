@@ -1,0 +1,29 @@
+{
+  "database": {
+    "dns": "postgres://postgres:password@localhost:5432/blnk?sslmode=disable"
+  },
+  "typesense": {
+    "host": "localhost",
+    "port": "8108",
+    "protocol": "http",
+    "api_key": "blnk-api-key"
+  },
+  "processing": {
+    "batch_size": 10000,
+    "bulk_size": 2000,
+    "progress_interval": 100000
+  },
+  "safety": {
+    "max_failure_rate_percent": 5.0
+  },
+  "retry": {
+    "max_retries": 3,
+    "retry_base_wait_seconds": 2
+  },
+  "collections_to_skip": [],
+  "time_range": {
+    "enabled": false,
+    "start_time_utc": "",
+    "end_time_utc": ""
+  }
+}

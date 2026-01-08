@@ -42,13 +42,12 @@ type transaction struct {
 // ============================================================================
 
 func reindexTransactions(ctx context.Context, db *sql.DB) bool {
-
-	// Get total count - only index APPLIED, INFLIGHT, REJECTED, SCHEDULED, and VOID transactions
+	// Build count query - only index APPLIED, INFLIGHT, REJECTED, SCHEDULED, and VOID transactions
+	countQuery := "SELECT COUNT(*) FROM blnk.transactions WHERE status IN ('APPLIED', 'INFLIGHT', 'REJECTED', 'SCHEDULED', 'VOID')"
+	countQuery, countParams := buildTimeRangeClause(countQuery, 1)
+	
 	var totalCount int64
-	err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM blnk.transactions 
-		WHERE status IN ('APPLIED', 'INFLIGHT', 'REJECTED', 'SCHEDULED', 'VOID')
-	`).Scan(&totalCount)
+	err := db.QueryRowContext(ctx, countQuery, countParams...).Scan(&totalCount)
 	if err != nil {
 		log("ERROR", "Failed to count transactions: %v", err)
 		return false
@@ -142,7 +141,7 @@ func reindexTransactions(ctx context.Context, db *sql.DB) bool {
 // ============================================================================
 
 func fetchTransactionBatch(ctx context.Context, db *sql.DB, offset int64) ([]*transaction, error) {
-	query := `
+	baseQuery := `
 		SELECT 
 			transaction_id,
 			COALESCE(parent_transaction, '') as parent_transaction,
@@ -163,11 +162,19 @@ func fetchTransactionBatch(ctx context.Context, db *sql.DB, offset int64) ([]*tr
 			COALESCE(meta_data, '{}') as meta_data
 		FROM blnk.transactions
 		WHERE status IN ('APPLIED', 'INFLIGHT', 'REJECTED', 'SCHEDULED', 'VOID')
-		ORDER BY created_at ASC
-		LIMIT $1 OFFSET $2
 	`
+	
+	// Build time range clause (appends to existing WHERE clause)
+	query, timeParams := buildTimeRangeClause(baseQuery, 1)
+	query += " ORDER BY created_at ASC"
+	
+	// Combine parameters: time range params first, then batch size and offset
+	params := append(timeParams, config.BatchSize, offset)
+	// Adjust LIMIT and OFFSET parameter numbers
+	paramCount := len(timeParams)
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", paramCount+1, paramCount+2)
 
-	rows, err := db.QueryContext(ctx, query, config.BatchSize, offset)
+	rows, err := db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}

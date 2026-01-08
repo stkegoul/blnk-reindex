@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -40,8 +41,12 @@ type identity struct {
 // ============================================================================
 
 func reindexIdentities(ctx context.Context, db *sql.DB) bool {
+	// Build count query with time range filtering
+	countQuery := "SELECT COUNT(*) FROM blnk.identity"
+	countQuery, countParams := buildTimeRangeClause(countQuery, 1)
+	
 	var totalCount int64
-	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM blnk.identity").Scan(&totalCount)
+	err := db.QueryRowContext(ctx, countQuery, countParams...).Scan(&totalCount)
 	if err != nil {
 		log("ERROR", "Failed to count identities: %v", err)
 		return false
@@ -128,7 +133,7 @@ func reindexIdentities(ctx context.Context, db *sql.DB) bool {
 // ============================================================================
 
 func fetchIdentityBatch(ctx context.Context, db *sql.DB, offset int64) ([]*identity, error) {
-	query := `
+	baseQuery := `
 		SELECT 
 			identity_id,
 			COALESCE(identity_type, '') as identity_type,
@@ -150,11 +155,19 @@ func fetchIdentityBatch(ctx context.Context, db *sql.DB, offset int64) ([]*ident
 			created_at,
 			COALESCE(meta_data, '{}') as meta_data
 		FROM blnk.identity
-		ORDER BY created_at ASC
-		LIMIT $1 OFFSET $2
 	`
+	
+	// Build time range clause
+	query, timeParams := buildTimeRangeClause(baseQuery, 1)
+	query += " ORDER BY created_at ASC"
+	
+	// Combine parameters: time range params first, then batch size and offset
+	params := append(timeParams, config.BatchSize, offset)
+	// Adjust LIMIT and OFFSET parameter numbers
+	paramCount := len(timeParams)
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", paramCount+1, paramCount+2)
 
-	rows, err := db.QueryContext(ctx, query, config.BatchSize, offset)
+	rows, err := db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}

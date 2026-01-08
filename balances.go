@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -36,9 +37,12 @@ type balance struct {
 // ============================================================================
 
 func reindexBalances(ctx context.Context, db *sql.DB) bool {
-	// Get total count
+	// Build count query with time range filtering
+	countQuery := "SELECT COUNT(*) FROM blnk.balances"
+	countQuery, countParams := buildTimeRangeClause(countQuery, 1)
+	
 	var totalCount int64
-	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM blnk.balances").Scan(&totalCount)
+	err := db.QueryRowContext(ctx, countQuery, countParams...).Scan(&totalCount)
 	if err != nil {
 		log("ERROR", "Failed to count balances: %v", err)
 		return false
@@ -132,7 +136,7 @@ func reindexBalances(ctx context.Context, db *sql.DB) bool {
 
 func fetchBalanceBatch(ctx context.Context, db *sql.DB, offset int64) ([]*balance, error) {
 	// Note: inflight_expires_at is NOT stored in the DB - it's computed at runtime
-	query := `
+	baseQuery := `
 		SELECT 
 			balance_id,
 			COALESCE(balance::text, '0') as balance,
@@ -150,11 +154,19 @@ func fetchBalanceBatch(ctx context.Context, db *sql.DB, offset int64) ([]*balanc
 			created_at,
 			COALESCE(meta_data, '{}') as meta_data
 		FROM blnk.balances
-		ORDER BY created_at ASC
-		LIMIT $1 OFFSET $2
 	`
+	
+	// Build time range clause
+	query, timeParams := buildTimeRangeClause(baseQuery, 1)
+	query += " ORDER BY created_at ASC"
+	
+	// Combine parameters: time range params first, then batch size and offset
+	params := append(timeParams, config.BatchSize, offset)
+	// Adjust LIMIT and OFFSET parameter numbers
+	paramCount := len(timeParams)
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", paramCount+1, paramCount+2)
 
-	rows, err := db.QueryContext(ctx, query, config.BatchSize, offset)
+	rows, err := db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}

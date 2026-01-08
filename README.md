@@ -39,60 +39,97 @@ Collections are reindexed in dependency order to satisfy reference constraints:
 
 ```
 typesense-reindex/
-├── main.go             # Entry point, config, shared utilities
+├── main.go             # Entry point, config loading, shared utilities
 ├── ledgers.go          # Ledger fetching and transformation
 ├── identities.go       # Identity fetching and transformation
 ├── balances.go         # Balance fetching and transformation
 ├── reconciliations.go  # Reconciliation fetching and transformation
 ├── transactions.go     # Transaction fetching and transformation
+├── config.json         # Configuration file (edit this!)
 ├── go.mod
 └── README.md
 ```
 
 ## Configuration
 
-Edit the `config` struct at the top of `main.go`:
+Configuration is managed through a `config.json` file. Edit this file to customize your settings.
 
-```go
-var config = struct {
-    // Database connection string (PostgreSQL)
-    DatabaseDNS string
+### Configuration File (`config.json`)
 
-    // Typesense configuration
-    TypesenseHost     string
-    TypesensePort     string
-    TypesenseProtocol string // "http" or "https"
-    TypesenseAPIKey   string
-
-    // Batch settings
-    BatchSize int   // Number of records per DB query page
-    BulkSize  int   // Number of documents per Typesense bulk import
-
-    // Progress and safety
-    ProgressInterval      int64   // Log progress every N records
-    MaxFailureRatePercent float64 // Exit if failure rate exceeds this (0-100)
-
-    // Retry settings
-    MaxRetries    int           // Max retries for transient failures
-    RetryBaseWait time.Duration // Base wait time between retries
-}{
-    DatabaseDNS: "postgres://postgres:password@localhost:5432/blnk?sslmode=disable",
-
-    TypesenseHost:     "localhost",
-    TypesensePort:     "8108",
-    TypesenseProtocol: "http",
-    TypesenseAPIKey:   "blnk-api-key",
-
-    BatchSize: 5000,
-    BulkSize:  1000,
-
-    ProgressInterval:      50000,
-    MaxFailureRatePercent: 5.0,
-
-    MaxRetries:    3,
-    RetryBaseWait: 2 * time.Second,
+```json
+{
+  "database": {
+    "dns": "postgres://postgres:password@localhost:5432/blnk?sslmode=disable"
+  },
+  "typesense": {
+    "host": "localhost",
+    "port": "8108",
+    "protocol": "http",
+    "api_key": "blnk-api-key"
+  },
+  "processing": {
+    "batch_size": 10000,
+    "bulk_size": 2000,
+    "progress_interval": 100000
+  },
+  "safety": {
+    "max_failure_rate_percent": 5.0
+  },
+  "retry": {
+    "max_retries": 3,
+    "retry_base_wait_seconds": 2
+  },
+  "collections_to_skip": [],
+  "time_range": {
+    "enabled": false,
+    "start_time_utc": "",
+    "end_time_utc": ""
+  }
 }
 ```
+
+### Configuration Options
+
+- **database.dns**: PostgreSQL connection string
+- **typesense**: Typesense server connection details
+- **processing**: Batch and bulk processing settings
+  - `batch_size`: Number of records per DB query page
+  - `bulk_size`: Number of documents per Typesense bulk import
+  - `progress_interval`: Log progress every N records
+- **safety**: Safety thresholds
+  - `max_failure_rate_percent`: Exit if failure rate exceeds this (0-100)
+- **retry**: Retry configuration for transient failures
+  - `max_retries`: Maximum number of retry attempts
+  - `retry_base_wait_seconds`: Base wait time between retries (exponential backoff)
+- **collections_to_skip**: Array of collection names to skip (e.g., `["ledgers", "identities"]`)
+- **time_range**: Time range filtering for selective reindexing
+  - `enabled`: Set to `true` to enable time range filtering
+  - `start_time_utc`: Start time in RFC3339 format (UTC), e.g., `"2024-01-01T00:00:00Z"`
+  - `end_time_utc`: End time in RFC3339 format (UTC), e.g., `"2024-12-31T23:59:59Z"`
+  - Leave empty strings to disable start/end limits
+  - Only records with `created_at` (or `started_at` for reconciliations) within the range will be reindexed
+
+### Time Range Filtering
+
+The time range feature allows you to selectively reindex only documents created within a specific time period. This is useful for:
+- Reindexing only recent documents after a schema change
+- Incremental reindexing of specific date ranges
+- Testing with a subset of data
+
+**Example configuration for reindexing documents from January 2024:**
+```json
+{
+  "time_range": {
+    "enabled": true,
+    "start_time_utc": "2024-01-01T00:00:00Z",
+    "end_time_utc": "2024-01-31T23:59:59Z"
+  }
+}
+```
+
+**Note**: All times must be in UTC and RFC3339 format. The script will filter based on:
+- `created_at` for ledgers, identities, balances, and transactions
+- `started_at` for reconciliations
 
 ## Usage
 
@@ -109,8 +146,11 @@ cd typesense-reindex
 # Install dependencies (first time only)
 go mod tidy
 
-# Run the script (compiles all .go files)
+# Run the script with default config.json
 go run .
+
+# Or specify a custom config file
+go run . custom-config.json
 ```
 
 **Note**: Use `go run .` (not `go run main.go`) to compile all Go files together.
@@ -121,7 +161,8 @@ go run .
 [2026-01-07 14:30:00] INFO: === Typesense Full Reindex Script ===
 [2026-01-07 14:30:00] INFO: Database: ***@localhost:5432/blnk?sslmode=disable
 [2026-01-07 14:30:00] INFO: Typesense: http://localhost:8108
-[2026-01-07 14:30:00] INFO: Batch Size: 5000, Bulk Size: 1000
+[2026-01-07 14:30:00] INFO: Batch Size: 10000, Bulk Size: 2000
+[2026-01-07 14:30:00] INFO: Time Range: 2024-01-01T00:00:00Z to 2024-01-31T23:59:59Z (UTC)
 [2026-01-07 14:30:00] INFO: Database connection established
 [2026-01-07 14:30:00] INFO: Verifying Typesense collections...
 [2026-01-07 14:30:00] INFO: All Typesense collections verified

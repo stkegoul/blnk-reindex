@@ -51,31 +51,97 @@ var config = struct {
 
 	// Collections to skip (set to skip already-completed collections)
 	CollectionsToSkip []string
-}{
-	// Database connection - use localhost when running from host machine
-	DatabaseDNS: "postgres://postgres:password@localhost:5432/blnk?sslmode=disable",
 
-	// Typesense connection
-	TypesenseHost:     "localhost",
-	TypesensePort:     "8108",
-	TypesenseProtocol: "http",
-	TypesenseAPIKey:   "blnk-api-key",
+	// Time range filtering
+	TimeRangeEnabled bool
+	TimeRangeStart   *time.Time // UTC time - nil means no start limit
+	TimeRangeEnd     *time.Time // UTC time - nil means no end limit
+}{}
 
-	// Processing - tuned for very large datasets (1M+ records)
-	BatchSize:        10000,
-	BulkSize:         2000,
-	ProgressInterval: 100000,
+// loadConfig loads configuration from config.json file
+func loadConfig() error {
+	configFile := "config.json"
+	if len(os.Args) > 1 {
+		configFile = os.Args[1]
+	}
 
-	// Safety - abort if more than 5% of documents fail
-	MaxFailureRatePercent: 5.0,
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return fmt.Errorf("failed to read config file '%s': %w", configFile, err)
+	}
 
-	// Retry config for transient failures
-	MaxRetries:    3,
-	RetryBaseWait: 2 * time.Second,
+	var configData struct {
+		Database struct {
+			DNS string `json:"dns"`
+		} `json:"database"`
+		Typesense struct {
+			Host     string `json:"host"`
+			Port     string `json:"port"`
+			Protocol string `json:"protocol"`
+			APIKey   string `json:"api_key"`
+		} `json:"typesense"`
+		Processing struct {
+			BatchSize        int   `json:"batch_size"`
+			BulkSize         int   `json:"bulk_size"`
+			ProgressInterval int64 `json:"progress_interval"`
+		} `json:"processing"`
+		Safety struct {
+			MaxFailureRatePercent float64 `json:"max_failure_rate_percent"`
+		} `json:"safety"`
+		Retry struct {
+			MaxRetries           int `json:"max_retries"`
+			RetryBaseWaitSeconds int `json:"retry_base_wait_seconds"`
+		} `json:"retry"`
+		CollectionsToSkip []string `json:"collections_to_skip"`
+		TimeRange         struct {
+			Enabled      bool   `json:"enabled"`
+			StartTimeUTC string `json:"start_time_utc"`
+			EndTimeUTC   string `json:"end_time_utc"`
+		} `json:"time_range"`
+	}
 
-	// Skip collections that were already successfully reindexed
-	// Example: []string{"ledgers", "identities", "balances", "reconciliations"}
-	CollectionsToSkip: []string{},
+	if err := json.Unmarshal(data, &configData); err != nil {
+		return fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Load basic config
+	config.DatabaseDNS = configData.Database.DNS
+	config.TypesenseHost = configData.Typesense.Host
+	config.TypesensePort = configData.Typesense.Port
+	config.TypesenseProtocol = configData.Typesense.Protocol
+	config.TypesenseAPIKey = configData.Typesense.APIKey
+	config.BatchSize = configData.Processing.BatchSize
+	config.BulkSize = configData.Processing.BulkSize
+	config.ProgressInterval = configData.Processing.ProgressInterval
+	config.MaxFailureRatePercent = configData.Safety.MaxFailureRatePercent
+	config.MaxRetries = configData.Retry.MaxRetries
+	config.RetryBaseWait = time.Duration(configData.Retry.RetryBaseWaitSeconds) * time.Second
+	config.CollectionsToSkip = configData.CollectionsToSkip
+
+	// Load time range
+	config.TimeRangeEnabled = configData.TimeRange.Enabled
+	if config.TimeRangeEnabled {
+		if configData.TimeRange.StartTimeUTC != "" {
+			startTime, err := time.Parse(time.RFC3339, configData.TimeRange.StartTimeUTC)
+			if err != nil {
+				return fmt.Errorf("invalid start_time_utc format (use RFC3339, e.g., 2024-01-01T00:00:00Z): %w", err)
+			}
+			// Ensure it's in UTC
+			startTime = startTime.UTC()
+			config.TimeRangeStart = &startTime
+		}
+		if configData.TimeRange.EndTimeUTC != "" {
+			endTime, err := time.Parse(time.RFC3339, configData.TimeRange.EndTimeUTC)
+			if err != nil {
+				return fmt.Errorf("invalid end_time_utc format (use RFC3339, e.g., 2024-12-31T23:59:59Z): %w", err)
+			}
+			// Ensure it's in UTC
+			endTime = endTime.UTC()
+			config.TimeRangeEnd = &endTime
+		}
+	}
+
+	return nil
 }
 
 // ============================================================================
@@ -514,6 +580,41 @@ func isRetryableError(err error) bool {
 // HELPER FUNCTIONS
 // ============================================================================
 
+// buildTimeRangeClause builds a WHERE clause for time range filtering based on created_at
+// Returns the WHERE clause and any parameters to bind
+func buildTimeRangeClause(baseQuery string, paramOffset int) (string, []interface{}) {
+	if !config.TimeRangeEnabled {
+		return baseQuery, []interface{}{}
+	}
+
+	var conditions []string
+	var params []interface{}
+	paramIdx := paramOffset
+
+	if config.TimeRangeStart != nil {
+		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", paramIdx))
+		params = append(params, *config.TimeRangeStart)
+		paramIdx++
+	}
+
+	if config.TimeRangeEnd != nil {
+		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", paramIdx))
+		params = append(params, *config.TimeRangeEnd)
+		paramIdx++
+	}
+
+	if len(conditions) == 0 {
+		return baseQuery, []interface{}{}
+	}
+
+	// Add WHERE clause or append to existing WHERE
+	whereClause := strings.Join(conditions, " AND ")
+	if strings.Contains(strings.ToUpper(baseQuery), "WHERE") {
+		return baseQuery + " AND " + whereClause, params
+	}
+	return baseQuery + " WHERE " + whereClause, params
+}
+
 func convertBigIntToString(value string) string {
 	if value == "" {
 		return "0"
@@ -541,9 +642,29 @@ func min(a, b int) int {
 
 func main() {
 	log("INFO", "=== Typesense Full Reindex Script ===")
+
+	// Load configuration from config.json
+	if err := loadConfig(); err != nil {
+		log("ERROR", "Failed to load configuration: %v", err)
+		os.Exit(1)
+	}
+
 	log("INFO", "Database: %s", maskConnectionString(config.DatabaseDNS))
 	log("INFO", "Typesense: %s://%s:%s", config.TypesenseProtocol, config.TypesenseHost, config.TypesensePort)
 	log("INFO", "Batch Size: %d, Bulk Size: %d", config.BatchSize, config.BulkSize)
+
+	// Log time range if enabled
+	if config.TimeRangeEnabled {
+		if config.TimeRangeStart != nil && config.TimeRangeEnd != nil {
+			log("INFO", "Time Range: %s to %s (UTC)", config.TimeRangeStart.Format(time.RFC3339), config.TimeRangeEnd.Format(time.RFC3339))
+		} else if config.TimeRangeStart != nil {
+			log("INFO", "Time Range: from %s (UTC)", config.TimeRangeStart.Format(time.RFC3339))
+		} else if config.TimeRangeEnd != nil {
+			log("INFO", "Time Range: until %s (UTC)", config.TimeRangeEnd.Format(time.RFC3339))
+		}
+	} else {
+		log("INFO", "Time Range: disabled (indexing all records)")
+	}
 
 	ctx := context.Background()
 
