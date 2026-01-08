@@ -75,7 +75,7 @@ var config = struct {
 
 	// Skip collections that were already successfully reindexed
 	// Example: []string{"ledgers", "identities", "balances", "reconciliations"}
-	CollectionsToSkip: []string{"ledgers", "identities", "balances", "reconciliations"},
+	CollectionsToSkip: []string{},
 }
 
 // ============================================================================
@@ -562,10 +562,10 @@ func main() {
 	log("INFO", "Database connection established")
 
 	// Remove references from sources and destinations in transactions collection
-	if err := removeReferencesFromTransactionsSchema(ctx); err != nil {
-		log("ERROR", "Failed to remove references from transactions schema: %v", err)
-		os.Exit(1)
-	}
+	// if err := removeReferencesFromTransactionsSchema(ctx); err != nil {
+	// 	log("ERROR", "Failed to remove references from transactions schema: %v", err)
+	// 	os.Exit(1)
+	// }
 
 	// Verify all collections exist
 	log("INFO", "Verifying Typesense collections...")
